@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: chatbot-flask
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python app.py"
+    envVars:
+      - key: AZURE_OPENAI_ENDPOINT
+        value: https://<tu-nombre>.openai.azure.com/
+      - key: AZURE_OPENAI_KEY
+        value: <tu-clave>
+      - key: AZURE_DEPLOYMENT_NAME
+        value: gpt-35-turbo
