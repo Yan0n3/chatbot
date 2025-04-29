@@ -1,2 +1,5 @@
-flask
+Flask
 openai
+pyjwt
+requests
+cryptography
