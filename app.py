@@ -17,7 +17,12 @@ DEPLOYMENT_NAME = os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
 def chat():
     try:
         data = request.json
-        user_input = data.get("text", "")
+
+        # Solo procesar mensajes de texto
+        if data.get("type") != "message" or "text" not in data:
+            return jsonify({"type": "message", "text": "No puedo procesar este tipo de mensaje."})
+
+        user_input = data["text"]
 
         response = client.chat.completions.create(
             model=DEPLOYMENT_NAME,
@@ -33,10 +38,17 @@ def chat():
         )
 
         reply = response.choices[0].message.content
-        return jsonify({"text": reply})
+
+        return jsonify({
+            "type": "message",
+            "text": reply
+        })
 
     except Exception as e:
-        return jsonify({"text": f"Error: {str(e)}"}), 500
+        return jsonify({
+            "type": "message",
+            "text": f"Ocurrió un error: {str(e)}"
+        }), 500
 
 @app.route("/", methods=["GET"])
 def home():
