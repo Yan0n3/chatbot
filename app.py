@@ -70,6 +70,9 @@ def chat():
     try:
         validate_jwt_from_request()  # ✅ Autenticación
 
+        print("✅ Recibido POST de Web Chat")
+        print("📦 JSON recibido:", request.json)
+        
         data = request.json
         if data.get("type") != "message" or "text" not in data:
             return jsonify({"type": "message", "text": "No puedo procesar este tipo de mensaje."})
