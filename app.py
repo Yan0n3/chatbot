@@ -33,3 +33,8 @@ def get_response():
 @app.route("/", methods=["GET"])
 def health():
     return "Bot is running!", 200
+
+if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 10000))  # Render define PORT automáticamente
+    app.run(host="0.0.0.0", port=port)
