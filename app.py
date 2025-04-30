@@ -1,11 +1,12 @@
+import os
+import json
+import asyncio
+import logging
+import traceback
+from flask import Flask, request, Response
 from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
 from botbuilder.schema import Activity, ActivityTypes
-from flask import Flask, request, Response
-import os
-import asyncio
-import sys
-import traceback
-import logging
+from openai import AzureOpenAI
 
 # Configurar logging
 logging.basicConfig(
@@ -14,121 +15,92 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AzureBot")
 
-# App y configuración
-APP = Flask(__name__)
+# Crear app Flask\ napp = Flask(__name__)
 PORT = os.environ.get("PORT", 3978)
 
-# IMPORTANTE: Configuración del ID y contraseña del bot
-APP_ID = os.environ.get("MicrosoftAppId", "315d9eaa-47c1-40e6-8348-28397241e393") 
+# Credenciales de Bot Framework
+APP_ID = os.environ.get("MicrosoftAppId", "")
 APP_PASSWORD = os.environ.get("MicrosoftAppPassword", "")
 
-# Log de verificación de credenciales
-logger.info(f"Configurando bot con APP_ID: {APP_ID}")
-logger.info(f"Password configurada: {'Sí' if APP_PASSWORD else 'No'}")
+# Registro OpenAI Azure\ nAZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+AZURE_DEPLOYMENT_NAME = os.environ.get("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
 
-# CLAVE DE SOLUCIÓN: Configuración adecuada para Auth JWTs
-SETTINGS = BotFrameworkAdapterSettings(
-    app_id=APP_ID,
-    app_password=APP_PASSWORD
+# Cliente Azure OpenAI
+ai_client = AzureOpenAI(
+    api_key=AZURE_OPENAI_KEY,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_version=AZURE_OPENAI_API_VERSION,
 )
 
-# Crear adaptador con la configuración
-ADAPTER = BotFrameworkAdapter(SETTINGS)
+# Configurar BotFramework Adapter\ nsettings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
+adapter = BotFrameworkAdapter(settings)
 
 # Manejo de errores
 async def on_error(context: TurnContext, error: Exception):
-    logger.error(f"\n [on_turn_error] No controlado: {error}")
+    logger.error(f"[on_turn_error] {error}")
     logger.error(traceback.format_exc())
-    
-    await context.send_activity("Lo siento, ha ocurrido un error.")
+    await context.send_activity("Lo siento, ha ocurrido un error interno.")
 
-ADAPTER.on_turn_error = on_error
+adapter.on_turn_error = on_error
 
-# SOLUCIÓN: Deshabilitar la autenticación si no hay credenciales
-# Esto es útil para pruebas locales o si hay problemas con las credenciales
-if not APP_ID or not APP_PASSWORD:
-    logger.warning("¡ADVERTENCIA! Ejecutando sin autenticación. Esto solo debe hacerse en desarrollo.")
-    
-    # Monkey patch la función authenticate_request para bypass la autenticación
-    # Solo para desarrollo y pruebas - no usar en producción sin credenciales
-    from botframework.connector.auth import JwtTokenValidation
-    
-    async def authenticate_request_bypass(activity, auth_header, credentials, channel_service_url=None):
-        return
-    
-    JwtTokenValidation.authenticate_request = authenticate_request_bypass
+# Función para procesar cada mensaje\ nasync def process_message(turn_context: TurnContext):
+    if turn_context.activity.type == ActivityTypes.message and turn_context.activity.text:
+        user_text = turn_context.activity.text
+        logger.info(f"Mensaje recibido: {user_text}")
+
+        # Llamada a Azure OpenAI
+        try:
+            response = ai_client.chat.completions.create(
+                model=AZURE_DEPLOYMENT_NAME,
+                messages=[
+                    {"role": "system", "content": "Eres un asistente útil."},
+                    {"role": "user", "content": user_text}
+                ],
+                max_tokens=800,
+                temperature=1.0,
+                top_p=1.0,
+                frequency_penalty=0.0,
+                presence_penalty=0.0
+            )
+            bot_reply = response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Error en OpenAI: {e}")
+            bot_reply = "Lo siento, no pude procesar tu solicitud en este momento."
+
+        logger.info(f"Respuesta bot: {bot_reply}")
+        await turn_context.send_activity(bot_reply)
 
 # Ruta para mensajes
-@APP.route("/api/messages", methods=["POST"])
+@app.route("/api/messages", methods=["POST"])
 def messages():
-    logger.info("==== NUEVA SOLICITUD RECIBIDA ====")
-    
-    # Imprimir los headers para depuración
-    auth_header = request.headers.get("Authorization", "No Auth header found")
-    logger.info(f"Auth Header: {auth_header[:30]}..." if len(auth_header) > 30 else auth_header)
-    
+    logger.info("==== Nueva solicitud recibida ====")
     if "application/json" in request.headers.get("Content-Type", ""):
         body = request.json
-        logger.info(f"Body recibido: {body}")
     else:
-        logger.warning("Solicitud sin content-type application/json")
         return Response(status=415)
-    
-    async def process_activity():
-        try:
-            activity = Activity().deserialize(body)
-            
-            # Obtener el auth header para la autenticación
-            auth_header = request.headers.get("Authorization", "")
-            
-            async def turn_call(turn_context):
-                if turn_context.activity.type == ActivityTypes.message:
-                    message_text = turn_context.activity.text
-                    logger.info(f"Mensaje recibido: {message_text}")
-                    await turn_context.send_activity(f"Recibí: '{message_text}'")
-            
-            # IMPORTANTE: Pasar el auth_header al process_activity
-            await ADAPTER.process_activity(activity, auth_header, turn_call)
-            logger.info("Actividad procesada correctamente")
-            
-        except PermissionError as pe:
-            logger.error(f"Error de permisos: {str(pe)}")
-            logger.info("Intentando continuar sin auth...")
-            
-            # Opción alternativa si hay problemas de autenticación
-            activity = Activity().deserialize(body)
-            
-            async def turn_call(turn_context):
-                if turn_context.activity.type == ActivityTypes.message:
-                    await turn_context.send_activity(f"Recibí un mensaje (auth bypass)")
-            
-            # Usar un auth_header vacío o "" como bypass
-            await ADAPTER.process_activity(activity, "", turn_call)
-            
-        except Exception as e:
-            logger.error(f"Error procesando actividad: {str(e)}")
-            logger.error(traceback.format_exc())
-    
-    # Ejecutar la actividad en un loop asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+
+    activity = Activity().deserialize(body)
+    auth_header = request.headers.get("Authorization", "")
+
+    # Ejecutar la actividad en evento async
+    task = adapter.process_activity(activity, auth_header, process_message)
     try:
-        loop.run_until_complete(process_activity())
+        asyncio.run(task)
     except Exception as e:
-        logger.error(f"Error en el loop asyncio: {str(e)}")
-    finally:
-        loop.close()
-    
+        logger.error(f"Error al procesar actividad: {e}")
+        return Response(status=500)
+
     return Response(status=200)
 
-# Endpoint de diagnóstico para verificar estado
-@APP.route("/", methods=["GET"])
-def ping():
-    return "Bot running!"
+# Endpoint diagnóstico
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot está corriendo!", 200
 
-# Iniciar el servidor
-if __name__ == "__main__":
+# Iniciar servidor\ nif __name__ == "__main__":
     try:
-        APP.run(host='0.0.0.0', port=int(PORT))
+        app.run(host='0.0.0.0', port=int(PORT))
     except Exception as ex:
-        logger.error(f"Error al iniciar el servidor: {ex}")
+        logger.error(f"Error al iniciar servidor: {ex}")
