@@ -15,7 +15,6 @@ AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 MICROSOFT_APP_ID = os.getenv("MICROSOFT_APP_ID")
-MICROSOFT_APP_PASSWORD = os.getenv("MICROSOFT_APP_PASSWORD")  # Password opcional
 
 # 🎯 Cliente de Azure OpenAI
 client = AzureOpenAI(
@@ -65,26 +64,17 @@ def validate_jwt_from_request():
     except jwt.InvalidTokenError as e:
         abort(401, f"Invalid token: {str(e)}")
 
-# 🚧 Validación opcional de password extra
-# Para activarla, asegúrate de definir MICROSOFT_APP_PASSWORD y enviar el header X-Bot-Password
-
-def validate_app_password():
-    pwd = request.headers.get("X-Bot-Password")
-    if MICROSOFT_APP_PASSWORD and pwd != MICROSOFT_APP_PASSWORD:
-        abort(401, "Invalid bot password")
-
 @app.route("/api/messages", methods=["POST"])
 def chat():
     try:
-        # 1) Validación de autenticación (JWT y password)
+        # Validar JWT
         validate_jwt_from_request()
-        validate_app_password()
 
-        # 2) Log de request
+        # Log de request
         data = request.json
         print("✅ Recibido POST de Web Chat:", data)
 
-        # 3) Verificar mensaje válido
+        # Verificar mensaje válido
         if data.get("type") != "message" or "text" not in data:
             resp = {"type": "message", "text": "No puedo procesar este tipo de mensaje."}
             return make_response(jsonify(resp), 200, {'Content-Type': 'application/json'})
@@ -92,7 +82,7 @@ def chat():
         user_input = data["text"]
         print("💬 Usuario dijo:", user_input)
 
-        # 4) Lógica de OpenAI
+        # Lógica de OpenAI
         ai_response = client.chat.completions.create(
             model=AZURE_DEPLOYMENT_NAME,
             messages=[
@@ -108,7 +98,7 @@ def chat():
         reply = ai_response.choices[0].message.content
         print("🤖 Respuesta del modelo:", reply)
 
-        # 5) Formatear respuesta para Bot Framework
+        # Formatear respuesta para Bot Framework
         resp = {"type": "message", "text": reply}
         print("📤 Enviando respuesta a Web Chat:", resp)
 
