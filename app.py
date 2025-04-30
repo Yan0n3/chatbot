@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, make_response, abort
 from openai import AzureOpenAI
 import jwt
 import requests
@@ -14,6 +14,7 @@ AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 MICROSOFT_APP_ID = os.getenv("MICROSOFT_APP_ID")
+MICROSOFT_APP_PASSWORD = os.getenv("MICROSOFT_APP_PASSWORD")  # Nuevo campo
 
 # 🎯 Cliente de Azure OpenAI
 client = AzureOpenAI(
@@ -22,8 +23,7 @@ client = AzureOpenAI(
     api_version=AZURE_OPENAI_API_VERSION,
 )
 
-# 🔒 OpenID config para Bot Framework
-MICROSOFT_OPENID_CONFIG = "https://login.botframework.com/v1/.well-known/openidconfiguration"
+# 🔒 OpenID config para Bot Framework\ nMICROSOFT_OPENID_CONFIG = "https://login.botframework.com/v1/.well-known/openidconfiguration"
 jwks_cache = {}
 
 def get_microsoft_jwks():
@@ -65,21 +65,34 @@ def validate_jwt_from_request():
     except jwt.InvalidTokenError as e:
         abort(401, f"Invalid token: {str(e)}")
 
+# 🚧 Validación opcional de password extra
+ def validate_app_password():
+    pwd = request.headers.get("X-Bot-Password")
+    if not MICROSOFT_APP_PASSWORD or pwd != MICROSOFT_APP_PASSWORD:
+        abort(401, "Invalid bot password")
+
 @app.route("/api/messages", methods=["POST"])
 def chat():
     try:
-        validate_jwt_from_request()  # ✅ Autenticación
+        # 1) Validar el token JWT
+        validate_jwt_from_request()
+        # 2) Validar password extra en header X-Bot-Password
+        validate_app_password()
 
-        print("✅ Recibido POST de Web Chat")
-        print("📦 JSON recibido:", request.json)
-        
+        # 3) Log de request
         data = request.json
+        print("✅ Recibido POST de Web Chat:", data)
+
+        # 4) Verificar mensaje válido
         if data.get("type") != "message" or "text" not in data:
-            return jsonify({"type": "message", "text": "No puedo procesar este tipo de mensaje."})
+            resp = {"type": "message", "text": "No puedo procesar este tipo de mensaje."}
+            return make_response(jsonify(resp), 200, {'Content-Type': 'application/json'})
 
         user_input = data["text"]
+        print("💬 Usuario dijo:", user_input)
 
-        response = client.chat.completions.create(
+        # 5) Lógica de OpenAI
+        ai_response = client.chat.completions.create(
             model=AZURE_DEPLOYMENT_NAME,
             messages=[
                 {"role": "system", "content": "Eres un asistente útil."},
@@ -91,23 +104,22 @@ def chat():
             frequency_penalty=0.0,
             presence_penalty=0.0
         )
+        reply = ai_response.choices[0].message.content
+        print("🤖 Respuesta del modelo:", reply)
 
-        reply = response.choices[0].message.content
-
-        print("📤 Enviando respuesta a Web Chat:", reply)
-
-        return jsonify({
+        # 6) Formatear respuesta para Bot Framework
+        resp = {
             "type": "message",
-            "text": "Hola desde el bot en Render!",
-            "from": {"id": "bot", "name": "Bot"}
-            })
+            "text": reply
+        }
+        print("📤 Enviando respuesta a Web Chat:", resp)
 
+        return make_response(jsonify(resp), 200, {'Content-Type': 'application/json'})
 
     except Exception as e:
-        return jsonify({
-            "type": "message",
-            "text": f"Ocurrió un error: {str(e)}"
-        }), 500
+        print("❌ Error interno:", str(e))
+        error_resp = {"type": "message", "text": f"Ocurrió un error interno: {str(e)}"}
+        return make_response(jsonify(error_resp), 500, {'Content-Type': 'application/json'})
 
 @app.route("/", methods=["GET"])
 def home():
