@@ -1,5 +1,7 @@
-Flask
-openai
-pyjwt
-requests
-cryptography
+botbuilder-core>=4.14.0
+botbuilder-schema>=4.14.0
+botframework-connector>=4.14.0
+flask>=2.0.1
+asyncio>=3.4.3
+aiohttp>=3.7.4
+requests>=2.25.1
