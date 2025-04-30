@@ -14,7 +14,7 @@ AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 MICROSOFT_APP_ID = os.getenv("MICROSOFT_APP_ID")
-MICROSOFT_APP_PASSWORD = os.getenv("MICROSOFT_APP_PASSWORD")  # Nuevo campo
+MICROSOFT_APP_PASSWORD = os.getenv("MICROSOFT_APP_PASSWORD")  # Password opcional
 
 # 🎯 Cliente de Azure OpenAI
 client = AzureOpenAI(
@@ -23,7 +23,8 @@ client = AzureOpenAI(
     api_version=AZURE_OPENAI_API_VERSION,
 )
 
-# 🔒 OpenID config para Bot Framework\ nMICROSOFT_OPENID_CONFIG = "https://login.botframework.com/v1/.well-known/openidconfiguration"
+# 🔒 OpenID config para Bot Framework
+MICROSOFT_OPENID_CONFIG = "https://login.botframework.com/v1/.well-known/openidconfiguration"
 jwks_cache = {}
 
 def get_microsoft_jwks():
@@ -41,7 +42,7 @@ def validate_jwt_from_request():
     if not auth_header.startswith("Bearer "):
         abort(401, "Missing or invalid Authorization header")
 
-    token = auth_header.split(" ")[1]
+    token = auth_header.split(" ", 1)[1]
     unverified_header = jwt.get_unverified_header(token)
     kid = unverified_header.get("kid")
     jwks = get_microsoft_jwks()
@@ -50,25 +51,25 @@ def validate_jwt_from_request():
         abort(401, "Invalid token key")
 
     public_key = jwks[kid]
-
     try:
-        decoded = jwt.decode(
+        jwt.decode(
             token,
             public_key,
             algorithms=["RS256"],
             audience=MICROSOFT_APP_ID,
             issuer="https://api.botframework.com"
         )
-        return decoded
     except jwt.ExpiredSignatureError:
         abort(401, "Token expired")
     except jwt.InvalidTokenError as e:
         abort(401, f"Invalid token: {str(e)}")
 
 # 🚧 Validación opcional de password extra
- def validate_app_password():
+# Para activarla, asegúrate de definir MICROSOFT_APP_PASSWORD y enviar el header X-Bot-Password
+
+def validate_app_password():
     pwd = request.headers.get("X-Bot-Password")
-    if not MICROSOFT_APP_PASSWORD or pwd != MICROSOFT_APP_PASSWORD:
+    if MICROSOFT_APP_PASSWORD and pwd != MICROSOFT_APP_PASSWORD:
         abort(401, "Invalid bot password")
 
 @app.route("/api/messages", methods=["POST"])
@@ -76,7 +77,7 @@ def chat():
     try:
         # 1) Validar el token JWT
         validate_jwt_from_request()
-        # 2) Validar password extra en header X-Bot-Password
+        # 2) Validar password extra en header X-Bot-Password (opcional)
         validate_app_password()
 
         # 3) Log de request
