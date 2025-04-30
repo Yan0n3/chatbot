@@ -94,6 +94,8 @@ def chat():
 
         reply = response.choices[0].message.content
 
+        print("📤 Enviando respuesta a Web Chat:", reply)
+
         return jsonify({
             "type": "message",
             "text": reply,
