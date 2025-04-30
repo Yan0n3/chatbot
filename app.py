@@ -98,7 +98,7 @@ def chat():
 
         return jsonify({
             "type": "message",
-            "text": reply,
+            "text": "Hola desde el bot en Render!",
             "from": {"id": "bot", "name": "Bot"}
             })
 
