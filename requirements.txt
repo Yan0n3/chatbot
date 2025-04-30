@@ -5,8 +5,7 @@ flask>=2.0.1
 asyncio>=3.4.3
 aiohttp>=3.7.4
 requests>=2.25.1
-openai
-azure-identity
-msgraph
-msgraph-core
-azure-cosmos
+openai>=0.27.0
+azure-cosmos>=4.4.0
+azure-identity>=1.8.0
+msgraph-core>=0.3.0
