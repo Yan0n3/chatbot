@@ -140,23 +140,40 @@ async def save_user_state(user_id: str, state: dict):
     except Exception as e:
         logger.error(f"Error guardando estado: {e}")
 
+# Elimina esta línea
+user_preferences = {}
+
+# Modifica la función process_message:
 async def process_message(turn_context: TurnContext):
     user_id = turn_context.activity.from_property.id
     user_text = (turn_context.activity.text or "").strip().lower()
     
-    # Obtener estado actual
-    user_state = await get_user_state(user_id)
-    
-    # Flujo inicial de preferencias
+   # Obtener estado desde Cosmos DB
+    user_state = {}
+    if cosmos_available:
+        try:
+            item = user_state_container.read_item(
+                item=user_id,
+                partition_key=user_id
+            )
+            user_state = item.get("state", {})
+        except CosmosHttpResponseError as e:
+            if e.status_code != 404:
+                logger.error(f"Error leyendo estado: {e}")
+                
+    # Flujo de preferencias inicial
     if not user_state.get("intereses"):
         await turn_context.send_activity(
             "¡Hola! ¿Qué tipo de eventos te interesan? (Ej: IA, Marketing, Cloud)"
         )
-        user_state.update({
-            "estado": "esperando_intereses",
-            "intereses": []
-        })
-        await save_user_state(user_id, user_state)
+        user_state = {"estado": "esperando_intereses"}
+        # Guardar en Cosmos DB
+        if cosmos_available:
+            user_state_container.upsert_item({
+                "id": user_id,
+                "user_id": user_id,
+                "state": user_state
+            })
         return
 
     # Guardar intereses
