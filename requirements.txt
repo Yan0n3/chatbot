@@ -9,3 +9,4 @@ openai
 azure-identity
 msgraph-core
 azure-cosmos
+CosmosHttpResponseError
