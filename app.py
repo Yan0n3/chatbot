@@ -7,11 +7,13 @@ from flask import Flask, request, Response
 from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
 from botbuilder.schema import Activity
 from openai import AzureOpenAI
-from azure.cosmos import CosmosClient, CosmosHttpResponseError
+from azure.cosmos import CosmosClient
+from azure.cosmos.exceptions import CosmosHttpResponseError
 from azure.identity import ClientSecretCredential
 from msgraph import GraphServiceClient
 
-# Configuración Cosmos DB\COSMOS_ENDPOINT = os.environ.get("COSMOS_ENDPOINT")
+# Configuración Cosmos DB
+del COSMOS_ENDPOINT = os.environ.get("COSMOS_ENDPOINT")
 COSMOS_KEY = os.environ.get("COSMOS_KEY")
 cosmos_client = CosmosClient(COSMOS_ENDPOINT, COSMOS_KEY)
 database = cosmos_client.get_database_client("convenciones-db")
