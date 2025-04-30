@@ -96,6 +96,17 @@ settings = BotFrameworkAdapterSettings(
 )
 adapter = BotFrameworkAdapter(settings)
 
+# Crear contenedor UserStates si no existe
+try:
+    database.create_container_if_not_exists(
+        id="UserStates",
+        partition_key=PartitionKey(path="/user_id"),
+        offer_throughput=400
+    )
+    logger.info("Contenedor UserStates verificado/creado")
+except Exception as e:
+    logger.error(f"Error creando UserStates: {e}")
+    
 async def on_error(context: TurnContext, error: Exception):
     logger.error(f"[on_turn_error] {error}")
     logger.error(traceback.format_exc())
