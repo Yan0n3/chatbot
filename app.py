@@ -5,6 +5,7 @@ from openai import AzureOpenAI
 import jwt
 import requests
 from jwt.algorithms import RSAAlgorithm
+from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__)
 
@@ -75,16 +76,15 @@ def validate_app_password():
 @app.route("/api/messages", methods=["POST"])
 def chat():
     try:
-        # 1) Validar el token JWT
+        # 1) Validación de autenticación (JWT y password)
         validate_jwt_from_request()
-        # 2) Validar password extra en header X-Bot-Password (opcional)
         validate_app_password()
 
-        # 3) Log de request
+        # 2) Log de request
         data = request.json
         print("✅ Recibido POST de Web Chat:", data)
 
-        # 4) Verificar mensaje válido
+        # 3) Verificar mensaje válido
         if data.get("type") != "message" or "text" not in data:
             resp = {"type": "message", "text": "No puedo procesar este tipo de mensaje."}
             return make_response(jsonify(resp), 200, {'Content-Type': 'application/json'})
@@ -92,7 +92,7 @@ def chat():
         user_input = data["text"]
         print("💬 Usuario dijo:", user_input)
 
-        # 5) Lógica de OpenAI
+        # 4) Lógica de OpenAI
         ai_response = client.chat.completions.create(
             model=AZURE_DEPLOYMENT_NAME,
             messages=[
@@ -108,15 +108,15 @@ def chat():
         reply = ai_response.choices[0].message.content
         print("🤖 Respuesta del modelo:", reply)
 
-        # 6) Formatear respuesta para Bot Framework
-        resp = {
-            "type": "message",
-            "text": reply
-        }
+        # 5) Formatear respuesta para Bot Framework
+        resp = {"type": "message", "text": reply}
         print("📤 Enviando respuesta a Web Chat:", resp)
 
         return make_response(jsonify(resp), 200, {'Content-Type': 'application/json'})
 
+    except HTTPException:
+        # Propagar errores de abort (401, etc.)
+        raise
     except Exception as e:
         print("❌ Error interno:", str(e))
         error_resp = {"type": "message", "text": f"Ocurrió un error interno: {str(e)}"}
