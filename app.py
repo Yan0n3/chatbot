@@ -13,7 +13,7 @@ from azure.identity import ClientSecretCredential
 from msgraph import GraphServiceClient
 
 # Configuración Cosmos DB
-del COSMOS_ENDPOINT = os.environ.get("COSMOS_ENDPOINT")
+COSMOS_ENDPOINT = os.environ.get("COSMOS_ENDPOINT")
 COSMOS_KEY = os.environ.get("COSMOS_KEY")
 cosmos_client = CosmosClient(COSMOS_ENDPOINT, COSMOS_KEY)
 database = cosmos_client.get_database_client("convenciones-db")
