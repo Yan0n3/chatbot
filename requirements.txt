@@ -6,3 +6,6 @@ asyncio>=3.4.3
 aiohttp>=3.7.4
 requests>=2.25.1
 openai
+azure-identity
+msgraph-core
+azure-cosmos
