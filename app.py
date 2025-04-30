@@ -1,121 +1,90 @@
+from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
+from botbuilder.schema import Activity, ActivityTypes
+from flask import Flask, request, Response
 import os
-import json
-from flask import Flask, request, jsonify, make_response, abort
-from openai import AzureOpenAI
-import jwt
-import requests
-from jwt.algorithms import RSAAlgorithm
-from werkzeug.exceptions import HTTPException
+import asyncio
+import sys
+import traceback
 
-app = Flask(__name__)
+# App y configuración del adaptador
+APP = Flask(__name__)
+PORT = os.environ.get("PORT", 3978)
 
-# 🔐 Configuración desde variables de entorno
-AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
-MICROSOFT_APP_ID = os.getenv("MICROSOFT_APP_ID")
+# Configuración del bot
+APP_ID = os.environ.get("MicrosoftAppId", "315d9eaa-47c1-40e6-8348-28397241e393")
+APP_PASSWORD = os.environ.get("MicrosoftAppPassword", "")
 
-# 🎯 Cliente de Azure OpenAI
-client = AzureOpenAI(
-    api_key=AZURE_OPENAI_KEY,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-    api_version=AZURE_OPENAI_API_VERSION,
-)
+# Configurar el adaptador con las credenciales
+SETTINGS = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
+ADAPTER = BotFrameworkAdapter(SETTINGS)
 
-# 🔒 OpenID config para Bot Framework
-MICROSOFT_OPENID_CONFIG = "https://login.botframework.com/v1/.well-known/openidconfiguration"
-jwks_cache = {}
+# Manejador de errores
+async def on_error(context: TurnContext, error: Exception):
+    print(f"\n [on_turn_error] No controlado: {error}", file=sys.stderr)
+    traceback.print_exc()
+    
+    # Enviar mensaje de error al usuario
+    await context.send_activity("Lo siento, parece que algo salió mal.")
 
-def get_microsoft_jwks():
-    if not jwks_cache:
-        openid_config = requests.get(MICROSOFT_OPENID_CONFIG).json()
-        jwks_uri = openid_config["jwks_uri"]
-        keys = requests.get(jwks_uri).json()["keys"]
-        for key in keys:
-            kid = key["kid"]
-            jwks_cache[kid] = RSAAlgorithm.from_jwk(json.dumps(key))
-    return jwks_cache
+ADAPTER.on_turn_error = on_error
 
-def validate_jwt_from_request():
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        abort(401, "Missing or invalid Authorization header")
+# Escuchar solicitudes entrantes en /api/messages
+@APP.route("/api/messages", methods=["POST"])
+def messages():
+    # Añadir logs para depuración
+    print("Solicitud recibida en /api/messages")
+    print(f"Headers: {request.headers}")
+    
+    if "application/json" in request.headers["Content-Type"]:
+        body = request.json
+        print(f"Body: {body}")
+    else:
+        print("Contenido no es JSON")
+        return Response(status=415)
 
-    token = auth_header.split(" ", 1)[1]
-    unverified_header = jwt.get_unverified_header(token)
-    kid = unverified_header.get("kid")
-    jwks = get_microsoft_jwks()
+    # Procesar la actividad
+    async def process_activity():
+        # Crear un contexto para la actividad entrante
+        activity = Activity().deserialize(body)
+        
+        # Procesar la actividad
+        async def turn_call(turn_context):
+            print(f"Tipo de actividad: {turn_context.activity.type}")
+            
+            # Responder si es un mensaje
+            if turn_context.activity.type == ActivityTypes.message:
+                message_text = turn_context.activity.text
+                print(f"Mensaje recibido: {message_text}")
+                
+                # Respuesta simple para probar
+                await turn_context.send_activity(f"Recibí: '{message_text}'")
+                print("Respuesta enviada")
+            else:
+                print(f"Otro tipo de actividad: {turn_context.activity.type}")
+        
+        # Procesar la actividad con el adaptador
+        await ADAPTER.process_activity(activity, "", turn_call)
+        
+        return "OK"
 
-    if kid not in jwks:
-        abort(401, "Invalid token key")
-
-    public_key = jwks[kid]
+    # Ejecutar la función asíncrona
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        jwt.decode(
-            token,
-            public_key,
-            algorithms=["RS256"],
-            audience=MICROSOFT_APP_ID,
-            issuer="https://api.botframework.com"
-        )
-    except jwt.ExpiredSignatureError:
-        abort(401, "Token expired")
-    except jwt.InvalidTokenError as e:
-        abort(401, f"Invalid token: {str(e)}")
+        loop.run_until_complete(process_activity())
+    finally:
+        loop.close()
+    
+    return Response(status=200)
 
-@app.route("/api/messages", methods=["POST"])
-def chat():
-    try:
-        # Validar JWT
-        validate_jwt_from_request()
+# Ruta principal para verificar que el servicio está funcionando
+@APP.route("/", methods=["GET"])
+def ping():
+    return "Bot running!"
 
-        # Log de request
-        data = request.json
-        print("✅ Recibido POST de Web Chat:", data)
-
-        # Verificar mensaje válido
-        if data.get("type") != "message" or "text" not in data:
-            resp = {"type": "message", "text": "No puedo procesar este tipo de mensaje."}
-            return make_response(jsonify(resp), 200, {'Content-Type': 'application/json'})
-
-        user_input = data["text"]
-        print("💬 Usuario dijo:", user_input)
-
-        # Lógica de OpenAI
-        ai_response = client.chat.completions.create(
-            model=AZURE_DEPLOYMENT_NAME,
-            messages=[
-                {"role": "system", "content": "Eres un asistente útil."},
-                {"role": "user", "content": user_input}
-            ],
-            max_tokens=800,
-            temperature=1.0,
-            top_p=1.0,
-            frequency_penalty=0.0,
-            presence_penalty=0.0
-        )
-        reply = ai_response.choices[0].message.content
-        print("🤖 Respuesta del modelo:", reply)
-
-        # Formatear respuesta para Bot Framework
-        resp = {"type": "message", "text": reply}
-        print("📤 Enviando respuesta a Web Chat:", resp)
-
-        return make_response(jsonify(resp), 200, {'Content-Type': 'application/json'})
-
-    except HTTPException:
-        # Propagar errores de abort (401, etc.)
-        raise
-    except Exception as e:
-        print("❌ Error interno:", str(e))
-        error_resp = {"type": "message", "text": f"Ocurrió un error interno: {str(e)}"}
-        return make_response(jsonify(error_resp), 500, {'Content-Type': 'application/json'})
-
-@app.route("/", methods=["GET"])
-def home():
-    return "Bot is running!", 200
-
+# Iniciar el servidor Flask
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    try:
+        APP.run(host='0.0.0.0', port=PORT)
+    except Exception as ex:
+        print(f"Error al iniciar el servidor: {ex}")
