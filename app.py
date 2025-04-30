@@ -96,8 +96,10 @@ def chat():
 
         return jsonify({
             "type": "message",
-            "text": reply
-        })
+            "text": reply,
+            "from": {"id": "bot", "name": "Bot"}
+            })
+
 
     except Exception as e:
         return jsonify({
