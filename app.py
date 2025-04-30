@@ -29,11 +29,7 @@ logger.info(f"Password configurada: {'Sí' if APP_PASSWORD else 'No'}")
 # CLAVE DE SOLUCIÓN: Configuración adecuada para Auth JWTs
 SETTINGS = BotFrameworkAdapterSettings(
     app_id=APP_ID,
-    app_password=APP_PASSWORD,
-    auth_connect_timeout=5000,  # Aumentar timeout para auth
-    auth_connect_retry_count=3,  # Intentos de reconexión
-    channel_provider=None,  # Usar el channel provider default
-    auth_configuration=None  # Usar la configuración de auth default
+    app_password=APP_PASSWORD
 )
 
 # Crear adaptador con la configuración
