@@ -7,5 +7,6 @@ aiohttp>=3.7.4
 requests>=2.25.1
 openai
 azure-identity
+msgraph
 msgraph-core
 azure-cosmos
