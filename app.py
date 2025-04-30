@@ -10,7 +10,7 @@ from openai import AzureOpenAI
 from azure.cosmos import CosmosClient
 from azure.cosmos.exceptions import CosmosHttpResponseError
 from azure.identity import ClientSecretCredential
-from msgraph import GraphServiceClient
+from msgraph.core import GraphClient
 
 # Configuración Cosmos DB
 COSMOS_ENDPOINT = os.environ.get("COSMOS_ENDPOINT")
