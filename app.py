@@ -118,13 +118,12 @@ async def get_user_state(user_id: str) -> dict:
         raise
 
 async def save_user_state(user_id: str, state: dict):
-    """Guardar estado del usuario en Cosmos DB"""
     if not cosmos_available:
         return
     try:
         await user_state_container.upsert_item({
-            'id': user_id,
-            'partition_key': user_id,
+            'id': user_id,          # <-- Clave única
+            'user_id': user_id,     # <-- Partition key
             'state': state
         })
     except Exception as e:
