@@ -24,15 +24,16 @@ logger = logging.getLogger("AzureBot")
 class ServiceManager:
     def __init__(self):
         self.cosmos_available = False
+        self.graph_available = False
         self.openai_available = False
         self._setup_cosmos()
+        self._setup_graph()
         self._setup_openai()
 
     def _setup_cosmos(self):
         try:
             COSMOS_ENDPOINT = os.environ.get("COSMOS_ENDPOINT")
             COSMOS_KEY = os.environ.get("COSMOS_KEY")
-            
             if not (COSMOS_ENDPOINT and COSMOS_KEY):
                 logger.warning("Credenciales de Cosmos DB no configuradas")
                 return
@@ -57,12 +58,28 @@ class ServiceManager:
         except Exception as e:
             logger.error(f"Error en Cosmos DB: {e}")
 
+    def _setup_graph(self):
+        try:
+            from azure.identity import ClientSecretCredential
+            from msgraph.core import GraphClient
+            TENANT_ID = os.environ.get("TENANT_ID")
+            CLIENT_ID = os.environ.get("CLIENT_ID")
+            CLIENT_SECRET = os.environ.get("CLIENT_SECRET")
+            if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET]):
+                logger.warning("Credenciales de MS Graph no configuradas")
+                return
+            credential = ClientSecretCredential(TENANT_ID, CLIENT_ID, CLIENT_SECRET)
+            self.graph_client = GraphClient(credential=credential)
+            self.graph_available = True
+            logger.info("MS Graph configurado correctamente")
+        except Exception as e:
+            logger.error(f"Error en MS Graph: {e}")
+
     def _setup_openai(self):
         AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
         AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
         AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
         self.AZURE_DEPLOYMENT_NAME = os.environ.get("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
-        
         if AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT:
             try:
                 self.ai_client = AzureOpenAI(
@@ -84,42 +101,31 @@ class SmartBuddyBot:
     async def get_user_state(self, user_id: str) -> dict:
         if not self.services.cosmos_available:
             return {}
-            
         try:
             item = await asyncio.to_thread(
                 self.services.user_state_container.read_item,
-                item=user_id,  # Usar solo user_id
+                item=user_id,
                 partition_key=user_id
             )
             return item.get('state', {})
         except cosmos_exceptions.CosmosHttpResponseError as e:
             if e.status_code == 404:
                 return {}
-            logger.error(f"Error leyendo estado: {e}")
-            return {}
+            raise
 
     async def save_user_state(self, user_id: str, state: dict):
         if not self.services.cosmos_available:
             return
-            
         document = {
-            'id': user_id,  # ID = user_id
+            'id': user_id,
             'user_id': user_id,
             'state': state,
             'last_updated': str(datetime.datetime.utcnow())
         }
-        
-        # Guardar con reintentos
-        for _ in range(3):
-            try:
-                await asyncio.to_thread(
-                    self.services.user_state_container.upsert_item,
-                    document
-                )
-                return
-            except Exception as e:
-                logger.error(f"Error guardando estado: {e}")
-                await asyncio.sleep(1)
+        await asyncio.to_thread(
+            self.services.user_state_container.upsert_item,
+            document
+        )
 
     async def recomendar_eventos(self, user_id: str, user_state: dict, turn_context: TurnContext):
         if not self.services.cosmos_available:
@@ -131,10 +137,13 @@ class SmartBuddyBot:
             await turn_context.send_activity("No tienes intereses registrados.")
             return
 
-        # Query mejorada con validación
-        query = "SELECT * FROM Eventos e WHERE ARRAY_CONTAINS(@intereses, LOWER(e.temas))"
-        params = [{"name": "@intereses", "value": intereses}]
-        
+        # Query corregida para coincidir con elementos en el array
+        query_conditions = " OR ".join([f"ARRAY_CONTAINS(e.temas, @interes_{idx})" 
+                                      for idx in range(len(intereses))])
+        query = f"SELECT * FROM Eventos e WHERE {query_conditions}"
+        params = [{"name": f"@interes_{idx}", "value": interes} 
+                 for idx, interes in enumerate(intereses)]
+
         try:
             eventos = list(self.services.event_container.query_items(
                 query=query,
@@ -143,13 +152,12 @@ class SmartBuddyBot:
             ))
             
             if not eventos:
-                await turn_context.send_activity("No hay eventos disponibles.")
+                await turn_context.send_activity("No hay eventos que coincidan con tus intereses.")
                 return
 
-            # Ordenar por popularidad y horario
+            # Ordenar por popularidad y hora
             eventos.sort(key=lambda x: (-x.get('popularidad', 0), x['hora']))
 
-            # Mostrar top 3 eventos
             mensaje = "Eventos recomendados:\n"
             for evento in eventos[:3]:
                 mensaje += (
@@ -169,7 +177,42 @@ class SmartBuddyBot:
             await turn_context.send_activity(mensaje)
         except Exception as e:
             logger.error(f"Error recomendando eventos: {e}")
-            await turn_context.send_activity("No pude buscar eventos.")
+            await turn_context.send_activity("No pude buscar eventos en este momento.")
+
+    async def agendar_evento(self, user_id: str, user_state: dict, turn_context: TurnContext):
+        evento_id = user_state.get("eventos_pendientes", [None])[0]
+        if not evento_id:
+            await turn_context.send_activity("No hay eventos pendientes para agendar.")
+            return
+
+        try:
+            evento = await asyncio.to_thread(
+                self.services.event_container.read_item,
+                item=evento_id,
+                partition_key=evento_id.split("_")[0]  # Asumiendo ID como "ev_sala_001"
+            )
+            
+            if self.services.graph_available:
+                new_event = {
+                    "subject": evento["nombre"],
+                    "start": {"dateTime": evento["hora"], "timeZone": "UTC"},
+                    "end": {"dateTime": evento.get("hora_fin", evento["hora"]), "timeZone": "UTC"},
+                    "location": {"displayName": evento["sala"]}
+                }
+                await self.services.graph_client.post(
+                    "/me/calendar/events",
+                    json=new_event
+                )
+                await turn_context.send_activity("¡Evento agendado!")
+            else:
+                await turn_context.send_activity(f"Evento '{evento['nombre']}' registrado.")
+        except Exception as e:
+            logger.error(f"Error agendando evento: {e}")
+            await turn_context.send_activity("No pude agendar el evento.")
+        finally:
+            new_state = user_state.copy()
+            new_state.pop("eventos_pendientes", None)
+            await self.save_user_state(user_id, new_state)
 
     async def process_message(self, turn_context: TurnContext):
         if turn_context.activity.type != ActivityTypes.message:
@@ -177,48 +220,35 @@ class SmartBuddyBot:
 
         user_id = turn_context.activity.from_property.id
         user_text = (turn_context.activity.text or "").strip().lower()
-        user_state = await self.get_user_state(user_id)
 
-        # Flujo inicial de intereses
+        # Obtener estado
+        user_state = await self.get_user_state(user_id)
+        logger.info(f"Estado del usuario: {user_state}")
+
+        # Flujo de intereses
         if not user_state.get("intereses"):
-            await turn_context.send_activity("¡Hola! ¿Qué eventos te interesan? (Ej: IA, Cloud, Marketing)")
-            await self.save_user_state(user_id, {"estado": "esperando_intereses"})
+            if user_state.get("estado") != "esperando_intereses":
+                await self.save_user_state(user_id, {"estado": "esperando_intereses"})
+            await turn_context.send_activity("¡Hola! ¿Qué eventos te interesan? (Separa con comas: IA, Cloud, Marketing)")
             return
 
         # Guardar intereses
         if user_state.get("estado") == "esperando_intereses":
-            intereses = [i.strip() for i in user_text.split(",") if i.strip()]
-            if not intereses:
-                await turn_context.send_activity("No entendí tus intereses. Por favor, sepáralos por comas.")
+            if "," not in user_text:
+                await turn_context.send_activity("Por favor, separa tus intereses con comas. Ej: 'IA, Cloud, Marketing'")
                 return
-                
+            intereses = [i.strip() for i in user_text.split(",") if i.strip()]
             new_state = {
                 "intereses": intereses,
                 "estado": "listo"
             }
             await self.save_user_state(user_id, new_state)
-            await turn_context.send_activity(f"¡Genial! Registré tus intereses: {', '.join(intereses)}. ¿Quieres una recomendación?")
+            await turn_context.send_activity(f"¡Genial! Ahora puedo recomendarte eventos sobre: {', '.join(intereses)}. ¿Quieres una recomendación?")
             return
 
         # Flujo de agendamiento
         if "eventos_pendientes" in user_state and user_text in ("sí", "si"):
-            evento_id = user_state["eventos_pendientes"][0]  # Tomar primer evento recomendado
-            try:
-                evento = await asyncio.to_thread(
-                    self.services.event_container.read_item,
-                    item=evento_id,
-                    partition_key=evento_id.split("_")[0]  # Asumiendo ID como "ev_sala_001"
-                )
-                await turn_context.send_activity(
-                    f"Evento '{evento['nombre']}' en {evento['sala']} a las {evento['hora']} registrado."
-                )
-                # Limpiar estado
-                new_state = user_state.copy()
-                new_state.pop("eventos_pendientes", None)
-                await self.save_user_state(user_id, new_state)
-            except Exception as e:
-                logger.error(f"Error agendando evento: {e}")
-                await turn_context.send_activity("No pude agendar el evento.")
+            await self.agendar_evento(user_id, user_state, turn_context)
             return
 
         # Comandos específicos
@@ -255,7 +285,14 @@ adapter = BotFrameworkAdapter(settings)
 services = ServiceManager()
 bot = SmartBuddyBot(services)
 
-# Endpoint principal
+# Manejador de errores
+async def on_error(context: TurnContext, error: Exception):
+    logger.error(f"[on_turn_error] {error}")
+    traceback.print_exc()
+    await context.send_activity("Lo siento, ocurrió un error. El equipo técnico fue notificado.")
+
+adapter.on_turn_error = on_error
+
 @app.route("/api/messages", methods=["POST"])
 def messages():
     if "application/json" not in request.headers.get("Content-Type", ""):
@@ -275,12 +312,12 @@ def messages():
     
     return Response(status=200)
 
-# Endpoint de salud
 @app.route("/", methods=["GET"])
 def health_check():
     return json.dumps({
         "status": "running",
         "cosmos_db": "available" if services.cosmos_available else "unavailable",
+        "msgraph": "available" if services.graph_available else "unavailable",
         "openai": "available" if services.openai_available else "unavailable"
     }), 200
 
