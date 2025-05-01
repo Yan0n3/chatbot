@@ -28,7 +28,7 @@ try:
     
     if COSMOS_ENDPOINT and COSMOS_KEY:
         cosmos_client = CosmosClient(COSMOS_ENDPOINT, credential=COSMOS_KEY)
-        database = cosmos_client.get_database_client("convenciones-db")
+        database = cosmos_client.get_database_client("smart-buddy")
         
         # Crear contenedores si no existen
         try:
@@ -42,7 +42,7 @@ try:
                 partition_key=PartitionKey(path="/user_id"),
                 offer_throughput=400
             )
-            event_container = database.get_container_client("Eventos")
+            event_container = database.get_container_client("eventos")
             user_state_container = database.get_container_client("UserStates")
             cosmos_available = True
             logger.info("Contenedores de Cosmos DB verificados/creados")
