@@ -42,7 +42,7 @@ try:
                 partition_key=PartitionKey(path="/user_id"),
                 offer_throughput=400
             )
-            event_container = database.get_container_client("eventos")
+            event_container = database.get_container_client("Eventos")
             user_state_container = database.get_container_client("UserStates")
             cosmos_available = True
             logger.info("Contenedores de Cosmos DB verificados/creados")
