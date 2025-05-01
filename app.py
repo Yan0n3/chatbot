@@ -8,9 +8,7 @@ from flask import Flask, request, Response
 from botbuilder.core import (
     BotFrameworkAdapterSettings, 
     BotFrameworkAdapter, 
-    TurnContext,
-    ConversationState,
-    MemoryStorage
+    TurnContext
 )
 from botbuilder.schema import Activity, ActivityTypes
 from openai import AzureOpenAI
@@ -26,20 +24,19 @@ logger = logging.getLogger("AzureBot")
 class ServiceManager:
     def __init__(self):
         self.cosmos_available = False
-        self.graph_available = False
         self.openai_available = False
         self._setup_cosmos()
-        self._setup_graph()
         self._setup_openai()
 
     def _setup_cosmos(self):
         try:
             COSMOS_ENDPOINT = os.environ.get("COSMOS_ENDPOINT")
             COSMOS_KEY = os.environ.get("COSMOS_KEY")
+            
             if not (COSMOS_ENDPOINT and COSMOS_KEY):
                 logger.warning("Credenciales de Cosmos DB no configuradas")
                 return
-            
+
             self.cosmos_client = CosmosClient(COSMOS_ENDPOINT, credential=COSMOS_KEY)
             self.database = self.cosmos_client.get_database_client("smart-buddy")
             
@@ -60,36 +57,14 @@ class ServiceManager:
         except Exception as e:
             logger.error(f"Error en Cosmos DB: {e}")
 
-    def _setup_graph(self):
-        try:
-            from azure.identity import ClientSecretCredential
-            from msgraph.core import GraphClient
-            
-            TENANT_ID = os.environ.get("TENANT_ID")
-            CLIENT_ID = os.environ.get("CLIENT_ID")
-            CLIENT_SECRET = os.environ.get("CLIENT_SECRET")
-            
-            if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET]):
-                logger.warning("Credenciales de MS Graph no configuradas")
-                return
-            
-            self.credential = ClientSecretCredential(TENANT_ID, CLIENT_ID, CLIENT_SECRET)
-            self.graph_client = GraphClient(credential=self.credential)
-            self.graph_available = True
-            logger.info("MS Graph configurado correctamente")
-        except ImportError:
-            logger.warning("Módulo msgraph no disponible")
-        except Exception as e:
-            logger.error(f"Error en MS Graph: {e}")
-
     def _setup_openai(self):
-        try:
-            AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
-            AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
-            AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
-            self.AZURE_DEPLOYMENT_NAME = os.environ.get("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
-            
-            if AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT:
+        AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
+        AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
+        AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+        self.AZURE_DEPLOYMENT_NAME = os.environ.get("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
+        
+        if AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT:
+            try:
                 self.ai_client = AzureOpenAI(
                     api_key=AZURE_OPENAI_KEY,
                     azure_endpoint=AZURE_OPENAI_ENDPOINT,
@@ -97,10 +72,10 @@ class ServiceManager:
                 )
                 self.openai_available = True
                 logger.info("Azure OpenAI configurado correctamente")
-            else:
-                logger.warning("Credenciales de OpenAI no configuradas")
-        except Exception as e:
-            logger.error(f"Error en OpenAI: {e}")
+            except Exception as e:
+                logger.error(f"Error en OpenAI: {e}")
+        else:
+            logger.warning("Credenciales de OpenAI no configuradas")
 
 class SmartBuddyBot:
     def __init__(self, services):
@@ -111,7 +86,6 @@ class SmartBuddyBot:
             return {}
             
         try:
-            # Usar solo user_id como identificador
             item = await asyncio.to_thread(
                 self.services.user_state_container.read_item,
                 item=user_id,
@@ -131,7 +105,7 @@ class SmartBuddyBot:
             'id': user_id,
             'user_id': user_id,
             'state': state,
-            'last_updated': datetime.datetime.utcnow().isoformat()
+            'last_updated': str(datetime.datetime.utcnow())
         }
         
         # Guardar con reintentos
@@ -156,17 +130,18 @@ class SmartBuddyBot:
         # Obtener estado del usuario
         user_state = await self.get_user_state(user_id)
         
-        # Flujo de intereses
+        # Flujo de primera vez
         if not user_state.get("intereses"):
             if user_state.get("estado") != "esperando_intereses":
                 await self.save_user_state(user_id, {"estado": "esperando_intereses"})
             await turn_context.send_activity("¡Hola! ¿Qué tipo de eventos te interesan? (Ej: IA, Marketing, Cloud)")
             return
 
+        # Guardar intereses
         if user_state.get("estado") == "esperando_intereses":
             intereses = [i.strip() for i in user_text.split(",") if i.strip()]
             if not intereses:
-                await turn_context.send_activity("No entendí tus intereses. Por favor, sepáralos por comas (Ej: IA, Marketing, Cloud)")
+                await turn_context.send_activity("No entendí tus intereses. Por favor, sepáralos por comas.")
                 return
                 
             new_state = {
@@ -194,10 +169,11 @@ class SmartBuddyBot:
                 ))
                 if eventos:
                     evento = eventos[0]
-                    new_state = user_state | {
+                    new_state = user_state.copy()
+                    new_state.update({
                         "evento_pendiente": evento["id"],
                         "evento_pendiente_sala": evento["sala"]
-                    }
+                    })
                     await self.save_user_state(user_id, new_state)
                     await turn_context.send_activity(
                         f"Evento: {evento['nombre']} en {evento['sala']} a las {evento['hora']}. ¿Agendar? (sí/no)"
@@ -208,7 +184,7 @@ class SmartBuddyBot:
                 logger.error(f"Error buscando eventos: {e}")
                 await turn_context.send_activity("No pude buscar eventos.")
 
-        # Flujo de confirmación
+        # Confirmación de agendamiento
         elif "evento_pendiente" in user_state:
             if user_text in ("sí", "si"):
                 evento_id = user_state["evento_pendiente"]
@@ -220,27 +196,13 @@ class SmartBuddyBot:
                         item=evento_id,
                         partition_key=sala
                     )
-                    
-                    if self.services.graph_available:
-                        new_event = {
-                            "subject": evento["nombre"],
-                            "start": {"dateTime": evento["hora"], "timeZone": "UTC"},
-                            "end": {"dateTime": evento.get("hora_fin", evento["hora"]), "timeZone": "UTC"},
-                            "location": {"displayName": evento["sala"]}
-                        }
-                        await self.services.graph_client.post(
-                            "/me/calendar/events",
-                            data=json.dumps(new_event),
-                            headers={"Content-Type": "application/json"}
-                        )
-                        await turn_context.send_activity("¡Evento agendado!")
-                    else:
-                        await turn_context.send_activity("Evento registrado. Integración de calendario no disponible.")
+                    await turn_context.send_activity(
+                        f"Evento '{evento['nombre']}' registrado. Nota: Agendamiento automático no disponible."
+                    )
                 except Exception as e:
-                    logger.error(f"Error agendando: {e}")
-                    await turn_context.send_activity("No pude agendar el evento.")
-                    
-                # Limpiar estado
+                    logger.error(f"Error leyendo evento: {e}")
+                    await turn_context.send_activity("No pude recuperar el evento.")
+
                 new_state = user_state.copy()
                 new_state.pop("evento_pendiente", None)
                 new_state.pop("evento_pendiente_sala", None)
@@ -253,14 +215,14 @@ class SmartBuddyBot:
                 await self.save_user_state(user_id, new_state)
                 await turn_context.send_activity("Evento no agendado.")
 
-        # Respuesta por defecto
+        # Respuesta por defecto con OpenAI
         else:
             if self.services.openai_available:
                 try:
                     response = self.services.ai_client.chat.completions.create(
                         model=self.services.AZURE_DEPLOYMENT_NAME,
                         messages=[
-                            {"role": "system", "content": "Eres un asistente útil."},
+                            {"role": "system", "content": "Eres un asistente útil para eventos."},
                             {"role": "user", "content": user_text}
                         ],
                         max_tokens=800
@@ -282,7 +244,7 @@ APP_PASSWORD = os.environ.get("MicrosoftAppPassword", "")
 settings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
 adapter = BotFrameworkAdapter(settings)
 
-# Inicializar servicios
+# Inicializar servicios y bot
 services = ServiceManager()
 bot = SmartBuddyBot(services)
 
@@ -319,7 +281,6 @@ def health_check():
     return json.dumps({
         "status": "running",
         "cosmos_db": "available" if services.cosmos_available else "unavailable",
-        "msgraph": "available" if services.graph_available else "unavailable",
         "openai": "available" if services.openai_available else "unavailable"
     }), 200
 
