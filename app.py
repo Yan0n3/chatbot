@@ -5,7 +5,11 @@ import logging
 import traceback
 import datetime
 from flask import Flask, request, Response
-from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
+from botbuilder.core import (
+    BotFrameworkAdapterSettings, 
+    BotFrameworkAdapter, 
+    TurnContext
+)
 from botbuilder.schema import Activity, ActivityTypes
 from openai import AzureOpenAI
 from azure.cosmos import CosmosClient, PartitionKey, exceptions as cosmos_exceptions
@@ -38,10 +42,12 @@ class ServiceManager:
             self.database = self.cosmos_client.get_database_client("smart-buddy")
 
             self.database.create_container_if_not_exists(
-                id="Eventos", partition_key=PartitionKey(path="/sala")
+                id="Eventos",
+                partition_key=PartitionKey(path="/sala")
             )
             self.database.create_container_if_not_exists(
-                id="UserStates", partition_key=PartitionKey(path="/user_id")
+                id="UserStates",
+                partition_key=PartitionKey(path="/user_id")
             )
 
             self.event_container = self.database.get_container_client("Eventos")
@@ -73,21 +79,19 @@ class ServiceManager:
         AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
         AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
         self.AZURE_DEPLOYMENT_NAME = os.environ.get("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
-
-        if not (AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT):
+        if AZURE_OPENAI_KEY and AZURE_OPENAI_ENDPOINT:
+            try:
+                self.ai_client = AzureOpenAI(
+                    api_key=AZURE_OPENAI_KEY,
+                    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+                    api_version=AZURE_OPENAI_API_VERSION,
+                )
+                self.openai_available = True
+                logger.info("Azure OpenAI configurado correctamente")
+            except Exception as e:
+                logger.error(f"Error en OpenAI: {e}")
+        else:
             logger.warning("Credenciales de OpenAI no configuradas")
-            return
-
-        try:
-            self.ai_client = AzureOpenAI(
-                api_key=AZURE_OPENAI_KEY,
-                azure_endpoint=AZURE_OPENAI_ENDPOINT,
-                api_version=AZURE_OPENAI_API_VERSION,
-            )
-            self.openai_available = True
-            logger.info("Azure OpenAI configurado correctamente")
-        except Exception as e:
-            logger.error(f"Error en OpenAI: {e}")
 
 class SmartBuddyBot:
     def __init__(self, services):
@@ -99,7 +103,8 @@ class SmartBuddyBot:
         try:
             item = await asyncio.to_thread(
                 self.services.user_state_container.read_item,
-                item=user_id, partition_key=user_id
+                item=user_id,
+                partition_key=user_id
             )
             return item.get('state', {})
         except cosmos_exceptions.CosmosHttpResponseError as e:
@@ -131,11 +136,11 @@ class SmartBuddyBot:
             await turn_context.send_activity("No tienes intereses registrados.")
             return
 
-        query_conditions = " OR ".join([
-            f"ARRAY_CONTAINS(e.temas, @interes_{idx})" for idx in range(len(intereses))
-        ])
+        query_conditions = " OR ".join([f"ARRAY_CONTAINS(e.temas, @interes_{idx})" 
+                                      for idx in range(len(intereses))])
         query = f"SELECT * FROM Eventos e WHERE {query_conditions}"
-        params = [{"name": f"@interes_{idx}", "value": interes} for idx, interes in enumerate(intereses)]
+        params = [{"name": f"@interes_{idx}", "value": interes} 
+                 for idx, interes in enumerate(intereses)]
 
         try:
             eventos = list(self.services.event_container.query_items(
@@ -148,7 +153,7 @@ class SmartBuddyBot:
                 await turn_context.send_activity("No hay eventos que coincidan con tus intereses.")
                 return
 
-            eventos.sort(key=lambda x: (-x.get('popularidad', 0), x.get('hora', '')))
+            eventos.sort(key=lambda x: (-x.get('popularidad', 0), x['hora']))
 
             mensaje = "Eventos recomendados:\n"
             for evento in eventos[:3]:
@@ -212,12 +217,8 @@ class SmartBuddyBot:
         user_id = turn_context.activity.from_property.id
         user_text = (turn_context.activity.text or "").strip().lower()
 
-        if len(user_text) > 500:
-            await turn_context.send_activity("Tu mensaje es muy largo. Por favor, resume.")
-            return
-
         user_state = await self.get_user_state(user_id)
-        logger.info(f"Mensaje de {user_id}: {user_text}")
+        logger.info(f"Estado del usuario: {user_state}")
 
         if not user_state.get("intereses"):
             if user_state.get("estado") != "esperando_intereses":
@@ -230,7 +231,10 @@ class SmartBuddyBot:
                 await turn_context.send_activity("Por favor, separa tus intereses con comas. Ej: 'IA, Cloud, Marketing'")
                 return
             intereses = [i.strip() for i in user_text.split(",") if i.strip()]
-            new_state = {"intereses": intereses, "estado": "listo"}
+            new_state = {
+                "intereses": intereses,
+                "estado": "listo"
+            }
             await self.save_user_state(user_id, new_state)
             await turn_context.send_activity(f"¡Genial! Ahora puedo recomendarte eventos sobre: {', '.join(intereses)}. ¿Quieres una recomendación?")
             return
@@ -239,7 +243,11 @@ class SmartBuddyBot:
             await self.agendar_evento(user_id, user_state, turn_context)
             return
 
-        if any(palabra in user_text for palabra in ["recomienda", "sugiéreme", "muéstrame eventos"]):
+        if "recomienda" in user_text:
+            await self.recomendar_eventos(user_id, user_state, turn_context)
+            return
+
+        if any(interes in user_text for interes in user_state.get("intereses", [])):
             await self.recomendar_eventos(user_id, user_state, turn_context)
             return
 
@@ -253,19 +261,17 @@ class SmartBuddyBot:
                     ],
                     max_tokens=800
                 )
-                content = response.choices[0].message.content.strip() if response.choices else "No tengo respuesta en este momento."
-                await turn_context.send_activity(content)
+                await turn_context.send_activity(response.choices[0].message.content)
             except Exception as e:
                 logger.error(f"Error en OpenAI: {e}")
                 await turn_context.send_activity("No pude procesar tu solicitud.")
         else:
             await turn_context.send_activity("Estoy en modo limitado.")
 
-# Configuración Flask
 app = Flask(__name__)
 PORT = int(os.environ.get("PORT", 3978))
 settings = BotFrameworkAdapterSettings(
-    os.environ.get("MicrosoftAppId", ""),
+    os.environ.get("MicrosoftAppId", ""), 
     os.environ.get("MicrosoftAppPassword", "")
 )
 adapter = BotFrameworkAdapter(settings)
@@ -291,10 +297,7 @@ def messages():
         await adapter.process_activity(activity, auth_header, bot.process_message)
 
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(call_bot())
-        loop.close()
+        asyncio.run(call_bot())
     except Exception as e:
         logger.error(f"Error procesando actividad: {e}")
         return Response(status=500)
