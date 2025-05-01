@@ -3,6 +3,7 @@ import json
 import asyncio
 import logging
 import traceback
+import datetime
 from flask import Flask, request, Response
 from botbuilder.core import (
     BotFrameworkAdapterSettings, 
@@ -132,13 +133,24 @@ class SmartBuddyBot:
                 item=user_id,
                 partition_key=user_id
             )
-            return item.get('state', {})
+            state = item.get('state', {})
+            logger.info(f"Estado recuperado para {user_id}: {state}")
+            return state
         except cosmos_exceptions.CosmosHttpResponseError as e:
             if e.status_code == 404:
                 logger.info(f"Estado no encontrado para usuario {user_id}, creando nuevo")
+                # Intentar crear un documento vacío para este usuario
+                try:
+                    empty_state = {}
+                    await self.save_user_state(user_id, empty_state)
+                    logger.info(f"Documento de estado inicializado para {user_id}")
+                except Exception as init_error:
+                    logger.error(f"Error al inicializar estado para {user_id}: {init_error}")
                 return {}
             logger.error(f"Error al leer estado de usuario {user_id}: {e}")
-            raise
+            # En lugar de propagar el error, retornamos un estado vacío
+            # para que el bot pueda continuar funcionando
+            return {}
     
     async def save_user_state(self, user_id: str, state: dict):
         """Guardar el estado del usuario en Cosmos DB"""
@@ -146,18 +158,55 @@ class SmartBuddyBot:
             logger.warning(f"Cosmos DB no disponible para guardar estado de usuario {user_id}")
             return
             
+        # Crear una copia profunda del estado para evitar problemas de referencia
+        state_copy = json.loads(json.dumps(state))
+        logger.info(f"Guardando estado para {user_id}: {state_copy}")
+            
         try:
-            await asyncio.to_thread(
-                self.services.user_state_container.upsert_item,
-                {
-                    'id': user_id,
-                    'user_id': user_id,
-                    'state': state
-                }
-            )
-            logger.info(f"Estado guardado para usuario {user_id}")
+            # Primero verificamos si el documento ya existe
+            try:
+                existing = await asyncio.to_thread(
+                    self.services.user_state_container.read_item,
+                    item=user_id,
+                    partition_key=user_id
+                )
+                document = existing
+                document['state'] = state_copy
+                logger.info(f"Actualizando documento existente para {user_id}")
+            except cosmos_exceptions.CosmosHttpResponseError as e:
+                if e.status_code == 404:
+                    # Documento no existe, crear nuevo
+                    document = {
+                        'id': user_id,
+                        'user_id': user_id,
+                        'state': state_copy,
+                        'last_updated': str(datetime.datetime.utcnow())
+                    }
+                    logger.info(f"Creando nuevo documento para {user_id}")
+                else:
+                    raise
+                    
+            # Guardar documento con reintentos
+            retry_count = 0
+            max_retries = 3
+            while retry_count < max_retries:
+                try:
+                    result = await asyncio.to_thread(
+                        self.services.user_state_container.upsert_item,
+                        document
+                    )
+                    logger.info(f"Estado guardado exitosamente para {user_id}")
+                    return
+                except Exception as retry_error:
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        raise
+                    logger.warning(f"Reintento {retry_count} para guardar estado: {retry_error}")
+                    await asyncio.sleep(1)  # Esperar antes de reintentar
+                    
         except Exception as e:
             logger.error(f"Error guardando estado para usuario {user_id}: {e}")
+            logger.error(traceback.format_exc())
     
     async def recomendar_eventos(self, user_id: str, user_state: dict, turn_context: TurnContext):
         """Recomendar eventos basados en intereses del usuario"""
@@ -304,23 +353,46 @@ class SmartBuddyBot:
             return
         
         # Extraer información del usuario y mensaje
+        # Usamos una combinación de usuario y conversación para identificación más robusta
         user_id = turn_context.activity.from_property.id
         channel_id = turn_context.activity.channel_id
         conversation_id = turn_context.activity.conversation.id
         
+        # ID compuesto para identificación consistente del usuario entre sesiones
+        composite_id = f"{user_id}_{conversation_id}"
+        
         logger.info(f"Mensaje recibido - Usuario: {user_id}, Canal: {channel_id}, Conversación: {conversation_id}")
+        logger.info(f"ID compuesto para estado: {composite_id}")
         
         user_text = (turn_context.activity.text or "").strip().lower()
         logger.info(f"Texto recibido: '{user_text}'")
         
         # Obtener estado del usuario
-        user_state = await self.get_user_state(user_id)
-        logger.info(f"Estado del usuario: {user_state}")
+        try:
+            user_state = await self.get_user_state(composite_id)
+            logger.info(f"Estado del usuario recuperado: {user_state}")
+        except Exception as e:
+            logger.error(f"Error al recuperar el estado del usuario: {e}")
+            user_state = {}
+        
+        # Comandos de depuración y reinicio (útiles para desarrollo)
+        if user_text == "reiniciar estado":
+            await self.save_user_state(composite_id, {})
+            await turn_context.send_activity("Estado reiniciado. ¡Hola! ¿Qué tipo de eventos te interesan? (Ej: IA, Marketing, Cloud)")
+            return
+            
+        if user_text == "mostrar estado":
+            await turn_context.send_activity(f"Estado actual: {json.dumps(user_state)}")
+            return
         
         # Flujo de primera vez (sin intereses)
         if not user_state.get("intereses"):
+            if user_state.get("estado") != "esperando_intereses":
+                logger.info("Iniciando flujo de captura de intereses")
+                # Asegurarnos de que el estado es correcto
+                await self.save_user_state(composite_id, {"estado": "esperando_intereses"})
+                
             await turn_context.send_activity("¡Hola! ¿Qué tipo de eventos te interesan? (Ej: IA, Marketing, Cloud)")
-            await self.save_user_state(user_id, {"estado": "esperando_intereses"})
             return
         
         # Flujo de captura de intereses
@@ -329,12 +401,30 @@ class SmartBuddyBot:
             if not intereses:
                 await turn_context.send_activity("No entendí tus intereses. Por favor, sepáralos por comas (Ej: IA, Marketing, Cloud)")
                 return
-                
+            
+            logger.info(f"Guardando intereses: {intereses}")
+            
+            # Crear un nuevo estado completo
             new_state = {
                 "intereses": intereses,
                 "estado": "listo"
             }
-            await self.save_user_state(user_id, new_state)
+            
+            # Guardar y verificar el estado
+            try:
+                await self.save_user_state(composite_id, new_state)
+                # Verificar que se guardó correctamente
+                verify_state = await self.get_user_state(composite_id)
+                logger.info(f"Estado verificado después de guardar: {verify_state}")
+                
+                if verify_state.get("intereses") != intereses:
+                    logger.error("¡El estado no se guardó correctamente!")
+                    
+            except Exception as e:
+                logger.error(f"Error al guardar los intereses: {e}")
+                await turn_context.send_activity("Tuve un problema guardando tus intereses. Por favor intenta nuevamente.")
+                return
+                
             await turn_context.send_activity(f"¡Genial! Registré tus intereses: {', '.join(intereses)}. Ahora puedo recomendarte eventos.")
             return
         
@@ -424,16 +514,42 @@ def messages():
     
     # Deserializar actividad
     body = request.json
+    
+    # Registrar cuerpo de la solicitud para depuración
+    logger.info(f"Cuerpo de la solicitud: {json.dumps(body)}")
+    
     activity = Activity().deserialize(body)
     auth_header = request.headers.get("Authorization", "")
     
     logger.info(f"Actividad recibida: {activity.type}")
+    logger.info(f"Encabezados: {dict(request.headers)}")
+    
+    if hasattr(activity, 'from_property') and activity.from_property:
+        logger.info(f"Usuario: {activity.from_property.id}")
+    if hasattr(activity, 'conversation') and activity.conversation:
+        logger.info(f"Conversación: {activity.conversation.id}")
     
     # Procesar actividad
     async def call_bot():
-        await adapter.process_activity(activity, auth_header, bot.process_message)
+        try:
+            # Guardar el estado de la conversación antes de procesar
+            await adapter.process_activity(activity, auth_header, bot.process_message)
+            # Guardar el estado después de procesar
+            await conversation_state.save_changes(TurnContext(adapter, activity))
+        except Exception as inner_e:
+            logger.error(f"Error dentro de process_activity: {inner_e}")
+            logger.error(traceback.format_exc())
+            # Intento de recuperación - enviar mensaje de error al usuario
+            try:
+                error_context = TurnContext(adapter, activity)
+                await error_context.send_activity("Lo siento, ocurrió un error procesando tu mensaje. Intenta nuevamente.")
+            except:
+                # Si incluso el manejo de errores falla, simplemente registramos
+                pass
+            raise
     
     try:
+        # Ejecutamos de manera sincrónica para Flask
         asyncio.run(call_bot())
     except Exception as e:
         logger.error(f"Error procesando actividad: {e}")
