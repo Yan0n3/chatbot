@@ -21,6 +21,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AzureBot")
 
+INTERES_ALIASES = {
+    "ia": "inteligencia artificial",
+    "ai": "inteligencia artificial",
+    "nube": "cloud",
+    "mercadeo": "marketing",
+    # puedes extender esta lista
+}
+
 class ServiceManager:
     def __init__(self):
         self.cosmos_available = False
@@ -55,7 +63,7 @@ class ServiceManager:
             self.cosmos_available = True
             logger.info("Cosmos DB configurado correctamente")
         except Exception as e:
-            logger.error(f"Error en Cosmos DB: {e}")
+            logger.error(f"Error en Cosmos DB: {repr(e)}")
 
     def _setup_graph(self):
         try:
@@ -72,7 +80,7 @@ class ServiceManager:
             self.graph_available = True
             logger.info("MS Graph configurado correctamente")
         except Exception as e:
-            logger.error(f"Error en MS Graph: {e}")
+            logger.error(f"Error en MS Graph: {repr(e)}")
 
     def _setup_openai(self):
         AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
@@ -89,7 +97,7 @@ class ServiceManager:
                 self.openai_available = True
                 logger.info("Azure OpenAI configurado correctamente")
             except Exception as e:
-                logger.error(f"Error en OpenAI: {e}")
+                logger.error(f"Error en OpenAI: {repr(e)}")
         else:
             logger.warning("Credenciales de OpenAI no configuradas")
 
@@ -172,7 +180,7 @@ class SmartBuddyBot:
 
             await turn_context.send_activity(mensaje)
         except Exception as e:
-            logger.error(f"Error recomendando eventos: {e}")
+            logger.error(f"Error recomendando eventos: {repr(e)}")
             await turn_context.send_activity("No pude buscar eventos en este momento.")
 
     async def agendar_evento(self, user_id: str, user_state: dict, turn_context: TurnContext):
@@ -203,7 +211,7 @@ class SmartBuddyBot:
             else:
                 await turn_context.send_activity(f"Evento '{evento['nombre']}' registrado.")
         except Exception as e:
-            logger.error(f"Error agendando evento: {e}")
+            logger.error(f"Error agendando evento: {repr(e)}")
             await turn_context.send_activity("No pude agendar el evento.")
         finally:
             new_state = user_state.copy()
@@ -247,7 +255,11 @@ class SmartBuddyBot:
             await self.recomendar_eventos(user_id, user_state, turn_context)
             return
 
-        if any(interes in user_text for interes in user_state.get("intereses", [])):
+        user_text_tokens = user_text.split()
+        user_text_explicit = " ".join([INTERES_ALIASES.get(token, token) for token in user_text_tokens])
+        intereses_usuario = [i.lower() for i in user_state.get("intereses", [])]
+
+        if any(interes in user_text_explicit for interes in intereses_usuario):
             await self.recomendar_eventos(user_id, user_state, turn_context)
             return
 
@@ -263,7 +275,7 @@ class SmartBuddyBot:
                 )
                 await turn_context.send_activity(response.choices[0].message.content)
             except Exception as e:
-                logger.error(f"Error en OpenAI: {e}")
+                logger.error(f"Error en OpenAI: {repr(e)}")
                 await turn_context.send_activity("No pude procesar tu solicitud.")
         else:
             await turn_context.send_activity("Estoy en modo limitado.")
@@ -279,7 +291,7 @@ services = ServiceManager()
 bot = SmartBuddyBot(services)
 
 async def on_error(context: TurnContext, error: Exception):
-    logger.error(f"[on_turn_error] {error}")
+    logger.error(f"[on_turn_error] {repr(error)}")
     traceback.print_exc()
     await context.send_activity("Lo siento, ocurrió un error. El equipo técnico fue notificado.")
 
@@ -290,7 +302,7 @@ def messages():
     if "application/json" not in request.headers.get("Content-Type", ""):
         return Response(status=415)
 
-    activity = Activity().deserialize(request.json)
+    activity = Activity().from_dict(request.json)
     auth_header = request.headers.get("Authorization", "")
 
     async def call_bot():
@@ -299,7 +311,7 @@ def messages():
     try:
         asyncio.run(call_bot())
     except Exception as e:
-        logger.error(f"Error procesando actividad: {e}")
+        logger.error(f"Error procesando actividad: {repr(e)}")
         return Response(status=500)
 
     return Response(status=200)
@@ -317,4 +329,4 @@ if __name__ == "__main__":
     try:
         app.run(host='0.0.0.0', port=PORT)
     except Exception as ex:
-        logger.error(f"Error al iniciar servidor: {ex}")
+        logger.error(f"Error al iniciar servidor: {repr(ex)}")
